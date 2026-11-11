@@ -1,0 +1,576 @@
+---
+title: "Demanda de gasolina en México (2003-2023)"
+format:
+  html:
+    code-fold: true
+    df-print: kable
+    include-in-header:
+      - text: |
+          <style>
+          .cell-output pre, .cell-output pre code {
+            font-family: inherit;
+            font-size: 1em;
+            background: transparent;
+            border: none;
+            padding: 0;
+            white-space: pre-wrap;
+          }
+          .cell-output pre code { font-variant-numeric: tabular-nums; }
+          .cell-output table { margin-left: auto; margin-right: auto; }
+          </style>
+editor: visual
+---
+
+## Paso 1: cargar y explorar los datos
+
+```{r}
+library(readxl)
+library(knitr)
+
+# Hace que los resultados se vean como tablas en el HTML (mismo formato que las tablas del paso 6)
+tabla_html <- function(x, ...) asis_output(paste(c("", kable(x, ...), ""), collapse = "\n"))
+
+knit_print.summary.lm <- function(x, ...) {
+  coeficientes <- tabla_html(x$coefficients, digits = c(4, 4, 3, 5))
+  ajuste <- data.frame(R2 = x$r.squared, R2_ajustado = x$adj.r.squared,
+                       F = x$fstatistic[1], gl = x$df[2],
+                       Error_residual = x$sigma, row.names = NULL)
+  asis_output(paste0(coeficientes, tabla_html(ajuste, digits = 4)))
+}
+knit_print.matrix <- function(x, ...) tabla_html(x, digits = 4)
+knit_print.table <- function(x, ...) tabla_html(x)
+
+registerS3method("knit_print", "summary.lm", knit_print.summary.lm, envir = asNamespace("knitr"))
+registerS3method("knit_print", "matrix", knit_print.matrix, envir = asNamespace("knitr"))
+registerS3method("knit_print", "table", knit_print.table, envir = asNamespace("knitr"))
+```
+
+Lectura de los datos: tenemos una tabla anual con las variables que vamos a trabajar, en este caso el consumo de gasolina, precio de la misma y el PIB como tercera variable.
+
+```{r}
+datos <- read_excel("DATOS_GASOLINA.xlsx", sheet = "datos_reales")
+head(datos)
+```
+
+Nos quedamos con 2003-2023 (el precio de la gasolina existe desde 2003) y quitamos 2021 porque el dato de consumo de la fuente es inconsistente. Como podemos ver, nos quedamos con 20 datos para trabajar.
+
+```{r}
+datos <- datos[datos$año >= 2003 & datos$año != 2021, ]
+nrow(datos)
+```
+
+Acá definimos los nombres en columnas para identificar los datos a trabajar; además, vemos que el filtro sí funcionó debido a que ya no tenemos N/A. Además, tenemos la parte de estadística descriptiva para ver la concentración de los datos, donde solo encontramos algo de irregularidades en el consumo: la media vs. la mediana, pues nos indica que hay concentración a valores altos. Igualmente, podemos ver que el precio ha crecido de cierta manera uniformemente.
+
+```{r}
+names(datos)
+summary(datos)
+```
+
+### Gráficas en el tiempo
+
+Acá podemos ver el crecimiento del consumo durante estos años; cabe señalar que vemos cómo, debido a la pandemia, el consumo cae demasiado. La línea vertical marca 2017, el año de la liberalización del precio. Hasta el 2008 fue que tuvo crecimiento; después de eso vemos un estancamiento.
+
+```{r}
+plot(datos$año, datos$consumo_gasolina_pj, type = "b",
+     main = "Consumo de gasolina", xlab = "Año", ylab = "Petajoules")
+abline(v = 2017)
+```
+
+Acá podemos ver cómo va creciendo moderadamente el precio, mientras que después de la liberalización crece de golpe; en pandemia igualmente cae, y años después se estabilizó gracias al IEPS.
+
+Podemos señalar que hay algo que va en contra de la teoría económica: a pesar de que el precio aumenta, el consumo igual, lo que veíamos antes. Es por ello que vamos a relacionar esto con el PIB.
+
+```{r}
+plot(datos$año, datos$precio_real_gasolina, type = "b",
+     main = "Precio real de la gasolina", xlab = "Año", ylab = "Índice")
+abline(v = 2017)
+```
+
+El PIB crece de manera constante, excepto por la crisis financiera de 2009 y 2020 con la pandemia.
+
+```{r}
+plot(datos$año, datos$pib_real_mmdp, type = "b",
+     main = "PIB real", xlab = "Año", ylab = "Miles de millones de pesos")
+abline(v = 2017)
+```
+
+### Relación entre las variables (en logaritmos)
+
+Azul: antes de la liberalización (2003-2016). Rojo: después (2017-2023).
+
+```{r}
+colores <- ifelse(datos$año < 2017, "blue", "red")
+```
+
+Cada punto que vemos es un año; al hacer la dispersión logarítmica vemos que hay una relación positiva débil entre el consumo y el precio. Es lo que decíamos antes: los años que más cara estuvo la gasolina fue donde hubo más consumo; eso no tiene sentido viendo solo estas dos variables.
+
+Tenemos el supuesto de que a mayor precio, menor consumo.
+
+```{r}
+plot(log(datos$precio_real_gasolina), log(datos$consumo_gasolina_pj),
+     main = "ln(Consumo) vs ln(Precio real)", xlab = "ln(Precio real)", ylab = "ln(Consumo)",
+     pch = 19, col = colores)
+legend("topleft", legend = c("2003-2016", "2017-2023"), col = c("blue", "red"), pch = 19)
+```
+
+Ahora aquí se aprecia de otra manera: con un mayor ingreso hay mayor consumo. Ya que el PIB creció, fue entonces que el consumo subió; no necesariamente fue por culpa del precio.
+
+Fue entonces que, entre 2003 y 2019, consumo y precio crecieron, pero fue debido al PIB.
+
+Con la regresión múltiple y el PIB vamos a poder aislar los efectos del precio; veremos qué sucede.
+
+```{r}
+plot(log(datos$pib_real_mmdp), log(datos$consumo_gasolina_pj),
+     main = "ln(Consumo) vs ln(PIB real)", xlab = "ln(PIB real)", ylab = "ln(Consumo)",
+     pch = 19, col = colores)
+legend("topleft", legend = c("2003-2016", "2017-2023"), col = c("blue", "red"), pch = 19)
+```
+
+## Paso 2: estimar el modelo
+
+Logaritmos para que los coeficientes salgan como elasticidades: si precio sube tanto porcentaje, consumo baja otro tanto.
+
+Modelo: $\ln(Consumo) = \beta_1 + \beta_2 \ln(Precio) + \beta_3 \ln(PIB) + u$
+
+```{r}
+datos$ln_consumo <- log(datos$consumo_gasolina_pj)
+datos$ln_precio  <- log(datos$precio_real_gasolina)
+datos$ln_pib     <- log(datos$pib_real_mmdp)
+```
+
+### Regresión simple (solo el precio)
+
+Al realizar la regresión simple con el precio, obtenemos lo siguiente:
+
+Un coeficiente de 0.24 positivo, como suponíamos, es lo contrario a la teoría.
+
+Así mismo, p-valor de 0.07, por lo cual no es significativo.
+
+```{r}
+modelo_simple <- lm(ln_consumo ~ ln_precio, datos)
+summary(modelo_simple)
+```
+
+### Regresión múltiple (precio y PIB)
+
+Ahora rescatamos una interpretación diferente, ya que al meter al PIB cambia el signo del coeficiente del precio, así que era el PIB el que movía ambos factores.
+
+Precio: -0.94; si el precio sube 1%, el consumo baja 0.94%.
+
+PIB: 2.63; si el PIB sube 1%, el consumo sube 2.63%.
+
+P-valores menores a 0.05, es decir que ambas variables sí influyen.
+
+R²: 0.74, es decir que el modelo está explicando 74% de los cambios respecto al consumo.
+
+El p-valor de F igual es menor que 0.05, por lo que el modelo en conjunto sí demuestra funcionar.
+
+Gl: 17, debido a que usamos 3 de nuestros datos por los 3 coeficientes. Los que usamos para buscar los valores de la tabla.
+
+Otro dato clave es el error estándar residual, 0.065, que nos dice que el modelo se equivoca en promedio 6.5%.
+
+```{r}
+modelo <- lm(ln_consumo ~ ln_precio + ln_pib, datos)
+summary(modelo)
+```
+
+La ecuación estimada nos queda de la siguiente manera, sustituyendo cada coeficiente:
+
+$$\widehat{\ln(Consumo)} = -14.89 - 0.94 \ln(Precio) + 2.63 \ln(PIB)$$
+
+## Paso 3: pruebas de hipótesis
+
+### Valores de tablas (5%)
+
+Establecemos los grados de libertad. Vamos a trabajar bajo un 95% de confianza: es así que tenemos los siguientes valores, los cuales nos ponen la línea a superar para que los resultados se consideren significativos.
+
+t = 2.11
+
+F = 3.59
+
+```{r}
+n <- nrow(datos)
+k <- 3
+gl <- n - k
+
+t_tablas <- qt(0.975, gl)
+t_tablas
+
+F_tablas <- qf(0.95, k - 1, gl)
+F_tablas
+```
+
+### Prueba F global, calculada con el R²
+
+$$F = \frac{R^2/(k-1)}{(1-R^2)/(n-k)}$$
+
+En base a H₀ suponemos que el modelo no explica nada; sin embargo, la F calculada es mucho mayor que lo que habíamos establecido antes, por lo cual se rechaza: el precio y el PIB juntos sí pueden explicar el consumo de gasolina.
+
+```{r}
+R2 <- summary(modelo)$r.squared
+F_calc <- (R2 / (k - 1)) / ((1 - R2) / gl)
+F_calc
+```
+
+### Intervalos de confianza al 95%
+
+Como se muestra a continuación, tenemos los intervalos para el precio y el PIB. Ninguno de los dos rangos incluye 0, por lo cual las dos variables sí influyen.
+
+El rango del precio es negativo, por lo que subir el precio baja el consumo.
+
+```{r}
+confint(modelo, level = 0.95)
+```
+
+### ¿La elasticidad precio es igual a -1?
+
+$H_0: \beta_2 = -1$ (elasticidad unitaria) contra $H_1: \beta_2 \neq -1$
+
+$$t = \frac{\hat\beta_2 - (-1)}{ee(\hat\beta_2)}$$
+
+Tabla de los coeficientes.
+
+```{r}
+tabla <- summary(modelo)$coefficients
+tabla
+```
+
+Se prueba si la demanda es elasticidad unitaria. H₀ = -1
+
+Vamos a decir que si el precio sube 1%, el consumo baja exactamente 1%.
+
+Nuestra t es menor que 2.11, por lo cual no se rechaza.
+
+El -0.94 está tan cerca del -1 que no se puede distinguir; básicamente, si la gasolina sube un 10%, la gente compra cerca del 10% menos, por lo que el gasto en gasolina casi no cambia.
+
+```{r}
+b2  <- tabla["ln_precio", "Estimate"]
+ee2 <- tabla["ln_precio", "Std. Error"]
+
+t_precio <- (b2 - (-1)) / ee2
+t_precio
+```
+
+### ¿La elasticidad ingreso es igual a 1?
+
+$H_0: \beta_3 = 1$ contra $H_1: \beta_3 \neq 1$
+
+Ahora vamos a probar si el consumo va a crecer al mismo ritmo que la economía.
+
+H₀ = elasticidad ingreso es igual a 1.
+
+La t es mayor, por lo que se rechaza. Observamos que el consumo de gasolina crece más que el PIB: por cada 1% de crecimiento del PIB, el consumo sube en 2.63%.
+
+```{r}
+b3  <- tabla["ln_pib", "Estimate"]
+ee3 <- tabla["ln_pib", "Std. Error"]
+
+t_pib <- (b3 - 1) / ee3
+t_pib
+```
+
+## Paso 4: prueba de Chow (2017)
+
+$H_0$: no hay cambio estructural (la demanda de gasolina es igual antes y después de la liberalización de 2017).
+
+- Periodo 1: 2003-2016 ($n_1 = 14$)
+- Periodo 2: 2017-2023 sin 2021 ($n_2 = 6$)
+
+### Paso I: regresión restringida (todo el periodo)
+
+Simplificando el modelo a uno, tenemos el error total, lo cual nos va a servir para comparar.
+
+```{r}
+SCR_R <- sum(residuals(modelo)^2)
+SCR_R
+```
+
+### Paso II: regresión del periodo 2003-2016
+
+Antes de la liberalización y con 14 años de referencia, la elasticidad era de -0.66, además de que sí es significativo. El precio sí influenciaba.
+
+Error de 0.0291
+
+```{r}
+antes <- datos[datos$año < 2017, ]
+modelo_antes <- lm(ln_consumo ~ ln_precio + ln_pib, antes)
+summary(modelo_antes)
+```
+
+```{r}
+SCR_1 <- sum(residuals(modelo_antes)^2)
+SCR_1
+```
+
+### Paso III: regresión del periodo 2017-2023
+
+Después de la liberalización, con 6 años de referencia. La elasticidad precio es de -0.26 y no es significativa.
+
+Ahora bien, no significa que el modelo ya no importa, sino que tenemos limitantes por los pocos datos con los que contamos.
+
+Error de 0.0219
+
+```{r}
+despues <- datos[datos$año >= 2017, ]
+modelo_despues <- lm(ln_consumo ~ ln_precio + ln_pib, despues)
+summary(modelo_despues)
+```
+
+```{r}
+SCR_2 <- sum(residuals(modelo_despues)^2)
+SCR_2
+```
+
+### Paso IV: SCR no restringida
+
+Con los dos modelos, el error total es el siguiente:
+
+Es decir que separar el modelo en 2 baja el error 28%.
+
+```{r}
+SCR_NR <- SCR_1 + SCR_2
+SCR_NR
+```
+
+### Paso V: estadístico F
+
+$$F = \frac{(SCR_R - SCR_{NR})/k}{SCR_{NR}/(n_1 + n_2 - 2k)}$$
+
+La F de Chow es menor que el valor de tablas (3.34), por lo cual no se rechaza H₀.
+
+No hay evidencia estadística para decir que la demanda de gasolina haya cambiado en 2017.
+
+Tenemos el mismo problema antes mencionado: con pocos datos no alcanzamos a asegurarlo.
+
+La prueba de Chow es válida, pues los ruidos de los dos periodos son parecidos (2.76 contra 3.59).
+
+```{r}
+n1 <- nrow(antes)
+n2 <- nrow(despues)
+
+F_chow <- ((SCR_R - SCR_NR) / k) / (SCR_NR / (n1 + n2 - 2 * k))
+F_chow
+```
+
+```{r}
+F_critico <- qf(0.95, k, n1 + n2 - 2 * k)
+F_critico
+```
+
+### Supuesto de varianzas iguales
+
+$$F = \frac{\hat\sigma_2^2}{\hat\sigma_1^2} \qquad \hat\sigma_1^2 = \frac{SCR_1}{n_1 - k}, \quad \hat\sigma_2^2 = \frac{SCR_2}{n_2 - k}$$
+
+Ahora vamos a trabajar con las varianzas para verificar si es válida la prueba de Chow.
+
+```{r}
+var1 <- SCR_1 / (n1 - k)
+var2 <- SCR_2 / (n2 - k)
+
+F_var <- var2 / var1
+F_var
+```
+
+La F de varianza es de 2.76, menor que 3.59; podemos considerar que son similares, por lo que la prueba de Chow es válida.
+
+```{r}
+qf(0.95, n2 - k, n1 - k)
+```
+
+## Paso 5: predicción (media e individual)
+
+Planteamos dos escenarios:
+
+1.  Las condiciones de 2023: precio real = 91.38 y PIB = 25,027.2
+2.  El mismo PIB, pero con el precio real 10% más alto
+
+Se arman los dos escenarios con logaritmos, mismos nombres de variables.
+
+```{r}
+escenarios <- data.frame(
+  ln_precio = log(c(91.38, 91.38 * 1.10)),
+  ln_pib    = log(c(25027.2, 25027.2))
+)
+escenarios
+```
+
+### Predicción media (intervalo de confianza)
+
+Aquí vemos al consumo promedio que esperaríamos bajo las condiciones que establecimos.
+
+```{r}
+pred_media <- predict(modelo, escenarios, interval = "confidence", level = 0.95)
+pred_media
+```
+
+### Predicción individual (intervalo de predicción)
+
+Mientras que en esta parte es el consumo para un año en concreto. Cabe añadir que su rango es más ancho debido a que cada año es diferente al otro y puede traer sorpresas fuera del modelo.
+
+```{r}
+pred_individual <- predict(modelo, escenarios, interval = "prediction", level = 0.95)
+pred_individual
+```
+
+### Regresar a petajoules
+
+Acá regresamos los datos a petajoules, ya que anteriormente salían en logaritmos.
+
+El modelo predice de forma razonable. Con las condiciones de 2023, nos da 1,715 PJ. El consumo real fue de 1,615 PJ; cae dentro del rango individual.
+
+Si la gasolina sube 10%, el consumo baja a 1,567 PJ. Hablamos de un -8.6%. La elasticidad que veíamos anteriormente, -0.94, en la práctica.
+
+```{r}
+exp(pred_media)
+exp(pred_individual)
+```
+
+## Paso 6: tablas para el artículo
+
+```{r}
+library(knitr)
+```
+
+### Tabla 1. Variables y fuentes
+
+Qué mide cada variable, en qué unidad y de dónde sale.
+
+```{r}
+fuentes <- read_excel("DATOS_GASOLINA.xlsx", sheet = "fuentes")
+
+tabla1 <- data.frame(
+  Variable = c("Consumo de gasolina", "Precio real de la gasolina", "PIB real"),
+  Unidad = c("Petajoules", "Índice (2018 = 100)", "Miles de millones de pesos"),
+  Fuente = c(fuentes$fuente[1], "INEGI, INPC (gasolina de bajo octanaje / índice general)", fuentes$fuente[4])
+)
+kable(tabla1, caption = "Tabla 1. Variables y fuentes")
+```
+
+### Tabla 2. Estadística descriptiva
+
+En el periodo, el consumo fue de 1,102 a 1,678 PJ y el precio real de 56.9 a 100.1.
+
+```{r}
+tabla2 <- data.frame(
+  Variable = c("Consumo de gasolina (PJ)", "Precio real de la gasolina", "PIB real (miles de millones)"),
+  Media = c(mean(datos$consumo_gasolina_pj), mean(datos$precio_real_gasolina), mean(datos$pib_real_mmdp)),
+  Desv_estandar = c(sd(datos$consumo_gasolina_pj), sd(datos$precio_real_gasolina), sd(datos$pib_real_mmdp)),
+  Minimo = c(min(datos$consumo_gasolina_pj), min(datos$precio_real_gasolina), min(datos$pib_real_mmdp)),
+  Maximo = c(max(datos$consumo_gasolina_pj), max(datos$precio_real_gasolina), max(datos$pib_real_mmdp))
+)
+kable(tabla2, digits = 2, caption = "Tabla 2. Estadística descriptiva (2003-2023 sin 2021, n = 20)")
+```
+
+### Tabla 3. Resultados del modelo
+
+El precio (−0.94) y el PIB (2.63) son significativos al 5%: si el precio sube 1%, el consumo baja 0.94%; si el PIB sube 1%, el consumo sube 2.63%.
+
+```{r}
+ic <- confint(modelo, level = 0.95)
+
+tabla3 <- data.frame(
+  Variable = c("Constante", "ln(Precio real)", "ln(PIB real)"),
+  Coeficiente = tabla[, "Estimate"],
+  Error_estandar = tabla[, "Std. Error"],
+  t = tabla[, "t value"],
+  p_valor = formatC(tabla[, "Pr(>|t|)"], format = "f", digits = 5),
+  IC_inferior = ic[, 1],
+  IC_superior = ic[, 2],
+  row.names = NULL
+)
+kable(tabla3, digits = 4, caption = "Tabla 3. Estimación por MCO de la demanda de gasolina")
+```
+
+### Tabla 4. Bondad de ajuste
+
+El modelo explica 74% de los cambios del consumo (R² = 0.74) y es significativo en conjunto (F = 23.99).
+
+```{r}
+tabla4 <- data.frame(
+  Indicador = c("R²", "R² ajustado", "Estadístico F", "p-valor de F", "Observaciones (n)", "Grados de libertad"),
+  Valor = as.character(c(round(summary(modelo)$r.squared, 4),
+                         round(summary(modelo)$adj.r.squared, 4),
+                         round(F_calc, 2),
+                         signif(pf(F_calc, k - 1, gl, lower.tail = FALSE), 3),
+                         n,
+                         gl))
+)
+kable(tabla4, caption = "Tabla 4. Bondad de ajuste del modelo")
+```
+
+### Tabla 5. Regresión simple contra regresión múltiple
+
+Sin el PIB, el precio sale positivo y no significativo (+0.24); al agregar el PIB pasa a −0.94. Omitir el ingreso daba un resultado engañoso.
+
+```{r}
+simple <- summary(modelo_simple)$coefficients
+
+tabla5 <- data.frame(
+  Modelo = c("Simple (solo precio)", "Múltiple (precio y PIB)"),
+  Elasticidad_precio = c(simple["ln_precio", "Estimate"], tabla["ln_precio", "Estimate"]),
+  p_valor = c(simple["ln_precio", "Pr(>|t|)"], tabla["ln_precio", "Pr(>|t|)"]),
+  R2_ajustado = c(summary(modelo_simple)$adj.r.squared, summary(modelo)$adj.r.squared)
+)
+kable(tabla5, digits = 4, caption = "Tabla 5. Efecto de incluir el PIB en el modelo")
+```
+
+### Tabla 6. Pruebas de hipótesis
+
+Las dos variables influyen; la demanda es de elasticidad unitaria (no se rechaza −1) y el consumo crece más rápido que el PIB (se rechaza 1).
+
+```{r}
+estadistico <- c(F_calc, t_precio, t_pib, F_chow, F_var)
+critico <- c(F_tablas, t_tablas, t_tablas, F_critico, qf(0.95, n2 - k, n1 - k))
+
+tabla6 <- data.frame(
+  Prueba = c("Significancia global (F)", "Elasticidad precio unitaria (t)", "Elasticidad ingreso unitaria (t)",
+             "Cambio estructural en 2017 (Chow)", "Varianzas iguales entre periodos (F)"),
+  H0 = c("β2 = β3 = 0", "β2 = -1", "β3 = 1", "Sin cambio estructural", "σ1² = σ2²"),
+  Estadistico = estadistico,
+  Valor_critico = critico,
+  Decision = ifelse(abs(estadistico) > critico, "Se rechaza H0", "No se rechaza H0")
+)
+kable(tabla6, digits = 3, caption = "Tabla 6. Pruebas de hipótesis (5% de significancia)")
+```
+
+### Tabla 7. Elasticidades antes y después de 2017
+
+La elasticidad precio pasa de −0.66 a −0.26, pero la prueba de Chow (F = 1.86 \< 3.34) no encuentra evidencia de un cambio.
+
+```{r}
+antes_coef   <- summary(modelo_antes)$coefficients
+despues_coef <- summary(modelo_despues)$coefficients
+
+tabla7 <- data.frame(
+  Periodo = c("2003-2016", "2017-2023"),
+  n = c(n1, n2),
+  Elasticidad_precio = c(antes_coef["ln_precio", "Estimate"], despues_coef["ln_precio", "Estimate"]),
+  p_precio = c(antes_coef["ln_precio", "Pr(>|t|)"], despues_coef["ln_precio", "Pr(>|t|)"]),
+  Elasticidad_ingreso = c(antes_coef["ln_pib", "Estimate"], despues_coef["ln_pib", "Estimate"]),
+  p_ingreso = c(antes_coef["ln_pib", "Pr(>|t|)"], despues_coef["ln_pib", "Pr(>|t|)"]),
+  R2 = c(summary(modelo_antes)$r.squared, summary(modelo_despues)$r.squared),
+  SCR = c(SCR_1, SCR_2)
+)
+kable(tabla7, digits = 4, caption = "Tabla 7. Estimación por periodo (prueba de Chow)")
+```
+
+### Tabla 8. Predicciones
+
+El modelo predice 1,715 PJ para 2023 (real: 1,615 PJ). Con la gasolina 10% más cara, el consumo bajaría a 1,567 PJ (−8.6%).
+
+```{r}
+media <- exp(pred_media)
+individual <- exp(pred_individual)
+
+tabla8 <- data.frame(
+  Escenario = c("Condiciones de 2023", "Precio real 10% más alto"),
+  Precio_real = c(91.38, 91.38 * 1.10),
+  PIB_real = c(25027.2, 25027.2),
+  Prediccion_PJ = media[, "fit"],
+  Media_inferior = media[, "lwr"],
+  Media_superior = media[, "upr"],
+  Individual_inferior = individual[, "lwr"],
+  Individual_superior = individual[, "upr"]
+)
+kable(tabla8, digits = 1, caption = "Tabla 8. Consumo de gasolina predicho (petajoules, intervalos al 95%)")
+```
